@@ -357,7 +357,9 @@ Created on Thu Jan 19 12:55:51 2023
         ax1.set_ylabel('Bps')
         ax2.set_ylabel('%')
         fig1.legend()
-        
+
+        # plotting line within the given range 
+        plt.axhline(y = .5, xmin = 0.25, xmax = 0.9) 
         
         
     
