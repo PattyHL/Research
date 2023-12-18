@@ -1,1 +1,161 @@
+from fds.quant.universe import UnivLimit, ScreeningExpressionUniverse, IdentifierUniverse
+from fds.quant.dates import TimeSeries, Frequency
+from fds.quant.screening import Screen
+from fds.quant.fql import FQL, FQLExpression
+import pandas as pd
+import numpy as np
 
+#formulas = FQLExpression(expression=['FDS_ECON_CPI_M(0,COUNTRYN)'], name=[ 'CPI Monthly'], is_array=True )
+
+#=FDS("USCPI-ECON", "ECON_EXPR_DATA('FDS_ECON[BLSCUSR0000SA0]',20231199,20221299,M)")
+
+data_fql = FQL(universe=id_univ, formulas=["ECON_EXPR_DATA('FDS_ECON[BLSCUSR0000SA0]', #DATE, #DATE)", "ECON_EXPR_DATA('FDS_ECON[ISMPMI@M]',#DATE, #DATE)","GET_FQL_ARRAY_UQ('TRYUS10Y-FDS',FG_YIELD(#DATE,#DATE,M,,'YTM'))","GET_FQL_ARRAY_UQ('CMTIPSUS10Y-FDS',FG_YIELD(#DATE,#DATE,M,,'YTM'))"], columns=['CPI','Mfg PMI','US 10Y', 'US 10Y Real'])
+data_fql.calculate()
+results = data_fql.data
+
+results
+
+results['US 10Y BEI']=results['US 10Y']-results['US 10Y Real'] 
+results_=results.iloc[:,3:]
+
+results_.insert(1,"CPI 3MD",(results['CPI']/results['CPI'].shift(-3)-1)*100)
+results_.insert(2,"CPI YoY",(results['CPI']/results['CPI'].shift(-12)-1)*100)
+results_.insert(3,"CPI YoY 3MD",results_['CPI YoY']-results_['CPI YoY'].shift(-3))
+results_['US 10Y BEI 3MD']=results_['US 10Y BEI']-results_['US 10Y BEI'].shift(-3)
+results_['US 10Y BEI MoM']=results_['US 10Y BEI']-results_['US 10Y BEI'].shift(-1)
+results_['US 10Y BEI MoM 6MA']=results_['US 10Y BEI MoM'].rolling(window=6).mean()
+
+results_.insert(5,"Mfg PMI 3MA",results['Mfg PMI'].rolling(window=3).mean())
+results_.insert(6,"Mfg PMI 6MA",results['Mfg PMI'].rolling(window=6).mean())
+
+results_.insert(7,"Mfg PMI 6MA3MD",results_['Mfg PMI 6MA']-results_['Mfg PMI 6MA'].shift(-6))
+results_=results_.droplevel('symbol')
+
+results_.insert(10,"US 10Y Real 3MD",results_['US 10Y Real']-results_['US 10Y Real'].shift(-3))
+
+
+results_clean=results_.loc['2003-01-31':]
+
+results_clean=results_clean.interpolate()
+
+results_clean_signal=results_clean
+
+plt.plot(results_clean[['Mfg PMI 3MA', 'Mfg PMI 6MA3MD']])
+plt.axhline(y=50)
+plt.axhline(y=0)
+
+growth_conditions = [
+    (results_clean_signal['Mfg PMI 6MA']>=50) & (results_clean_signal['Mfg PMI 6MA3MD']>=0),
+    (results_clean_signal['Mfg PMI 6MA']>=50) & (results_clean_signal['Mfg PMI 6MA3MD']<0),
+    (results_clean_signal['Mfg PMI 6MA']<50) & (results_clean_signal['Mfg PMI 6MA3MD']>=0),
+    (results_clean_signal['Mfg PMI 6MA']<50) & (results_clean_signal['Mfg PMI 6MA3MD']<0)
+]
+
+growth_values=[2,1,-1,-2]
+
+results_clean_signal['Growth Regime']=np.select(growth_conditions, growth_values, default=0)
+
+inflation_conditions = [
+    results_clean_signal['CPI YoY 3MD']>=0.15,
+    results_clean_signal['CPI YoY 3MD']<=-0.15]
+
+inflation_values=[1,-1]
+
+results_clean_signal['Inflation Regime']=np.select(inflation_conditions, inflation_values)
+
+inflation_realrate_conditions=[
+    (results_clean_signal['Inflation Regime'] == 1) & (results_clean_signal['US 10Y Real 3MD']>=0.15),
+    (results_clean_signal['Inflation Regime'] == 1) & (results_clean_signal['US 10Y Real 3MD']<=-0.15),
+    (results_clean_signal['Inflation Regime'] == -1) & (results_clean_signal['US 10Y BEI 3MD']>=0.15),
+    (results_clean_signal['Inflation Regime'] == -1) & (results_clean_signal['US 10Y BEI 3MD']<=-0.15)
+]
+
+inflation_realrate_values=[2,1,-1,-2]
+
+results_clean_signal['Inflation/Real Rate Regime']=np.select(inflation_realrate_conditions, inflation_realrate_values, default=0)
+
+np.sum(results_clean_signal['Growth Regime']==-2)/results_clean_signal['Growth Regime'].size
+
+
+import matplotlib.pyplot as plt
+
+plt.plot(results_clean_signal['Growth Regime'].loc['2003-06-30':]) #.rolling(window=3).mean())
+
+plt.plot(results_clean_signal['Inflation/Real Rate Regime'].loc['2003-06-30':]) #.rolling(window=3).mean())
+
+plt.plot(results_clean_signal['US 10Y Real 3MD'].loc['2003-06-30':])
+plt.axhline(y=0.15, color='r', linestyle='--')
+plt.axhline(y=-0.15, color='r', linestyle='--')
+
+
+growth_inflation=pd.concat([results_clean_signal['Growth Regime'],results_clean_signal['Inflation/Real Rate Regime']],axis=1)
+
+growth_inflation_conditions=[
+    (growth_inflation['Growth Regime'] == 2) & (growth_inflation['Inflation/Real Rate Regime']==2),
+    (growth_inflation['Growth Regime'] == 2) & (growth_inflation['Inflation/Real Rate Regime']==1),
+    (growth_inflation['Growth Regime'] == 2) & (growth_inflation['Inflation/Real Rate Regime']==0),
+    (growth_inflation['Growth Regime'] == 2) & (growth_inflation['Inflation/Real Rate Regime']==-1),
+    (growth_inflation['Growth Regime'] == 2) & (growth_inflation['Inflation/Real Rate Regime']==-2),
+    (growth_inflation['Growth Regime'] == 1) & (growth_inflation['Inflation/Real Rate Regime']==2),
+    (growth_inflation['Growth Regime'] == 1) & (growth_inflation['Inflation/Real Rate Regime']==1),
+    (growth_inflation['Growth Regime'] == 1) & (growth_inflation['Inflation/Real Rate Regime']==0),
+    (growth_inflation['Growth Regime'] == 1) & (growth_inflation['Inflation/Real Rate Regime']==-1),
+    (growth_inflation['Growth Regime'] == 1) & (growth_inflation['Inflation/Real Rate Regime']==-2),
+    (growth_inflation['Growth Regime'] == -2) & (growth_inflation['Inflation/Real Rate Regime']==2),
+    (growth_inflation['Growth Regime'] == -2) & (growth_inflation['Inflation/Real Rate Regime']==1),
+    (growth_inflation['Growth Regime'] == -2) & (growth_inflation['Inflation/Real Rate Regime']==0),
+    (growth_inflation['Growth Regime'] == -2) & (growth_inflation['Inflation/Real Rate Regime']==-1),
+    (growth_inflation['Growth Regime'] == -2) & (growth_inflation['Inflation/Real Rate Regime']==-2),
+    (growth_inflation['Growth Regime'] == -1) & (growth_inflation['Inflation/Real Rate Regime']==2),
+    (growth_inflation['Growth Regime'] == -1) & (growth_inflation['Inflation/Real Rate Regime']==1),
+    (growth_inflation['Growth Regime'] == -1) & (growth_inflation['Inflation/Real Rate Regime']==0),
+    (growth_inflation['Growth Regime'] == -1) & (growth_inflation['Inflation/Real Rate Regime']==-1),
+    (growth_inflation['Growth Regime'] == -1) & (growth_inflation['Inflation/Real Rate Regime']==-2),
+]
+
+growth_inflation_values=['1I',	'1II',	'1III',	'1IV',	'1V',	'2I',	'2II',	'2III',	'2IV',	'2V',	'3I',	'3II',	'3III',	'3IV',	'3V',	'4I',	'4II',	'4III',	'4IV',	'4V']
+
+growth_inflation['Regime']=np.select(growth_inflation_conditions, growth_inflation_values, default=0)
+
+growth_inflation['Regime'].value_counts()
+
+
+##Asset Classes
+
+time_series = TimeSeries(start='20001231', 
+                         freq = Frequency.MONTHLY, 
+                         calendar='FIVEDAY')
+
+
+#stop='20231130', 
+#US CPI
+
+id_univ_tr = IdentifierUniverse(identifiers=['MLCABS','US-MSX','MLG0Q0','MLC0A0','MLH0A0'], time_series=time_series)
+id_univ_tr.calculate()
+
+data_fql_tr = FQL(universe=id_univ_tr, formulas=["FG_RETURN_ICS( #DATE, #DATE)"], columns=['Total Return'])
+data_fql_tr.calculate()
+results_tr = data_fql_tr.data
+
+results_tr_=results_tr.iloc[:,3:].unstack(level=-1)
+results_tr_.columns=results_tr_.columns.map('{0[1]}'.format)
+
+results_tr_.columns=['US Corporate','US ABS CMBS','US Treasuries','US High Yield','US MSCI Equity']
+
+results_tr_3mo3m=results_tr_.loc[::-1]
+
+results_tr_3mo3m=((results_tr_3mo3m/results_tr_3mo3m.shift(-1)-1)*100)
+
+results_tr_3mo3m=results_tr_3mo3m.loc[::-1].rolling(window=3).mean()
+
+results_tr_3mo3m_regime=pd.concat([growth_inflation['Regime'],results_tr_3mo3m], axis=1)
+
+assetsl=['US Corporate','US ABS CMBS','US Treasuries','US High Yield','US MSCI Equity']
+assets=pd.DataFrame(columns=assetsl, index=growth_inflation_values)
+
+
+for j in range(5):
+    iterator=0
+    for i in growth_inflation_values:
+        assets.iloc[iterator,j]=np.mean(results_tr_3mo3m_regime.loc[(results_tr_3mo3m_regime['Regime']==i), assetsl[j]])
+        iterator=iterator+1
